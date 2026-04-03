@@ -1,0 +1,848 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tp-microservices
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-config
+  namespace: tp-microservices
+data:
+  APP_ENV: production
+  FRONT_PORT: "80"
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: appdb
+  POSTGRES_USER: appuser
+  POSTGRES_PASSWORD: apppassword
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  S3_ENDPOINT: "http://s3:9000"
+  S3_ACCESS_KEY: minio
+  S3_SECRET_KEY: miniopassword
+  S3_BUCKET: app-files
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: front-nginx-config
+  namespace: tp-microservices
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: back-client-file-config
+  namespace: tp-microservices
+data:
+  app-config.json: |
+    {
+      "service": "back-client",
+      "port": 3001,
+      "features": {
+        "enableTicketCreation": true,
+        "enableTicketAttachment": true
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: back-admin-file-config
+  namespace: tp-microservices
+data:
+  app-config.json: |
+    {
+      "service": "back-admin",
+      "port": 3002,
+      "features": {
+        "enableTicketOps": true,
+        "enableAudit": true
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-declarative-config
+  namespace: tp-microservices
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    services:
+      - name: client-service
+        url: http://back-client.tp-microservices.svc.cluster.local:3001
+        routes:
+          - name: client-route
+            paths:
+              - /api/client
+            strip_path: true
+      - name: admin-service
+        url: http://back-admin.tp-microservices.svc.cluster.local:3002
+        routes:
+          - name: admin-route
+            paths:
+              - /api/admin
+            strip_path: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: tp-microservices
+data:
+  01-init.sql: |
+    CREATE TABLE IF NOT EXISTS app_health (
+      id SERIAL PRIMARY KEY,
+      service_name VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO app_health(service_name) VALUES ('postgres');
+
+    CREATE TABLE IF NOT EXISTS tickets (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
+      priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
+      requester_name TEXT NOT NULL,
+      assignee_name TEXT,
+      attachment_key TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO tickets (title, description, status, priority, requester_name, assignee_name)
+    SELECT seed.title, seed.description, seed.status, seed.priority, seed.requester_name, seed.assignee_name
+    FROM (
+      VALUES
+        ('Connexion VPN instable', 'Le VPN coupe toutes les 10 minutes', 'open', 'high', 'Alice', NULL),
+        ('Erreur MFA mobile', 'Le code OTP ne passe pas sur Android', 'in_progress', 'medium', 'Yanis', 'Sophie')
+    ) AS seed(title, description, status, priority, requester_name, assignee_name)
+    WHERE NOT EXISTS (SELECT 1 FROM tickets);
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+  namespace: tp-microservices
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+  namespace: tp-microservices
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-data-pvc
+  namespace: tp-microservices
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: front
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: front
+  template:
+    metadata:
+      labels:
+        app: front
+        zone: frontend
+    spec:
+      containers:
+        - name: front
+          image: tp/front:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: front-nginx-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+        zone: logic
+    spec:
+      containers:
+        - name: kong
+          image: kong:3.8
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: /kong/declarative/kong.yml
+            - name: KONG_PROXY_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_ADMIN_ACCESS_LOG
+              value: /dev/stdout
+            - name: KONG_PROXY_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_ADMIN_ERROR_LOG
+              value: /dev/stderr
+            - name: KONG_PROXY_LISTEN
+              value: 0.0.0.0:8000
+            - name: KONG_ADMIN_LISTEN
+              value: 0.0.0.0:8001
+            - name: KONG_NGINX_PROXY_CLIENT_MAX_BODY_SIZE
+              value: 50m
+          ports:
+            - containerPort: 8000
+            - containerPort: 8001
+          volumeMounts:
+            - name: kong-config
+              mountPath: /kong/declarative/kong.yml
+              subPath: kong.yml
+      volumes:
+        - name: kong-config
+          configMap:
+            name: kong-declarative-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back-client
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: back-client
+  template:
+    metadata:
+      labels:
+        app: back-client
+        zone: logic
+    spec:
+      containers:
+        - name: back-client
+          image: tp/back-client:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: shared-config
+          env:
+            - name: PORT
+              value: "3001"
+            - name: SERVICE_NAME
+              value: back-client
+            - name: APP_CONFIG_FILE
+              value: /app/config/app-config.json
+          volumeMounts:
+            - name: app-file-config
+              mountPath: /app/config/app-config.json
+              subPath: app-config.json
+      volumes:
+        - name: app-file-config
+          configMap:
+            name: back-client-file-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back-admin
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: back-admin
+  template:
+    metadata:
+      labels:
+        app: back-admin
+        zone: logic
+    spec:
+      containers:
+        - name: back-admin
+          image: tp/back-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3002
+          envFrom:
+            - configMapRef:
+                name: shared-config
+          env:
+            - name: PORT
+              value: "3002"
+            - name: SERVICE_NAME
+              value: back-admin
+            - name: APP_CONFIG_FILE
+              value: /app/config/app-config.json
+          volumeMounts:
+            - name: app-file-config
+              mountPath: /app/config/app-config.json
+              subPath: app-config.json
+      volumes:
+        - name: app-file-config
+          configMap:
+            name: back-admin-file-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+        zone: data
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args:
+            - server
+            - /data
+            - --console-address
+            - :9001
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: shared-config
+                  key: S3_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: shared-config
+                  key: S3_SECRET_KEY
+          volumeMounts:
+            - name: s3-data
+              mountPath: /data
+      volumes:
+        - name: s3-data
+          persistentVolumeClaim:
+            claimName: s3-data-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        zone: data
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        zone: data
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: shared-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: shared-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: shared-config
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init-sql
+              mountPath: /docker-entrypoint-initdb.d/01-init.sql
+              subPath: 01-init.sql
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data-pvc
+        - name: postgres-init-sql
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: front
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: front
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-proxy
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: kong
+  ports:
+    - name: proxy
+      port: 80
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-admin
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: kong
+  ports:
+    - name: admin
+      port: 8001
+      targetPort: 8001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: back-client
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: back-client
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: back-admin
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: back-admin
+  ports:
+    - name: http
+      port: 3002
+      targetPort: 3002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: tp-microservices
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: tp-microservices
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: kong-proxy
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: front
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: tp-microservices
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: tp-microservices
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller-to-front-and-kong
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - front
+          - kong
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kong-to-backs
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - back-client
+          - back-admin
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: kong
+      ports:
+        - protocol: TCP
+          port: 3001
+        - protocol: TCP
+          port: 3002
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kong-egress-to-backs
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: kong
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: back-client
+      ports:
+        - protocol: TCP
+          port: 3001
+    - to:
+        - podSelector:
+            matchLabels:
+              app: back-admin
+      ports:
+        - protocol: TCP
+          port: 3002
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-back-client-data-egress
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: back-client
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-back-admin-data-egress
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: back-admin
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-backs
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: back-client
+        - podSelector:
+            matchLabels:
+              app: back-admin
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-from-back-client
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: back-client
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-minio-from-backs
+  namespace: tp-microservices
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: back-client
+        - podSelector:
+            matchLabels:
+              app: back-admin
+      ports:
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
