@@ -1,6 +1,6 @@
 # TP Kubernetes - Plateforme Ticketing Microservices
 
-Ce projet implemente une architecture multi-services coherente sur Kubernetes:
+Ce projet implèmente une architecture multi-services cohérente sur Kubernetes:
 
 - Front VueJS
 - API Client Express
@@ -10,27 +10,27 @@ Ce projet implemente une architecture multi-services coherente sur Kubernetes:
 - PostgreSQL (base de donnees)
 - Ingress Nginx + Kong API Gateway
 
-Le domaine metier implemente est un systeme de ticketing (creation, suivi, mise a jour de statut, pieces jointes).
+Le domaine métier implèmente est un système de ticketing (création, suivi, mise à jour de statut, pièces jointes).
 
 Le front expose maintenant 2 interfaces distinctes:
 
-- Interface User: creation de ticket, consultation et upload de fichier sur ticket
-- Interface Admin: suivi global, statistiques et mise a jour de statut/assignation
+- Interface User: création de ticket, consultation et upload de fichier sur ticket
+- Interface Admin: suivi global, statistiques et mise à jour de statut/assignation
 
 ## Structure
 
 - `apps/front`: application VueJS
-- `apps/back-client`: API Express connectee a PostgreSQL, Redis, MinIO
-- `apps/back-admin`: API Express connectee a PostgreSQL, MinIO
-- `k8s/microservices-platform.yaml`: manifeste Kubernetes complet
+- `apps/back-client`: API Express connectée à PostgreSQL, Redis, MinIO
+- `apps/back-admin`: API Express connectée à PostgreSQL, MinIO
+- `k8s/`: ensemble des manifestes Kubernetes detaillés par catégorie (Namespace, ConfigMaps, Ingress, Services, etc.)
 - `scripts/build-images.sh`: build local des images applicatives
 
 ## Plan d'implementation
 
 1. Developpement des APIs back-client et back-admin avec healthchecks et endpoints metier.
-2. Developpement du front Vue connecte aux endpoints exposes via Ingress/Kong.
+2. Developpement du front Vue connecté aux endpoints exposés via Ingress/Kong.
 3. Containerisation des trois applications.
-4. Integration Kubernetes avec ConfigMap, volumes persistants, Services, Ingress et NetworkPolicies.
+4. Intégration Kubernetes avec ConfigMap, volumes persistants, Services, Ingress et NetworkPolicies.
 5. Validation locale des builds et de la syntaxe.
 
 ## Prerequis
@@ -78,7 +78,8 @@ minikube image load tp/front:latest
 ## Deploiement
 
 ```bash
-kubectl apply -f k8s/microservices-platform.yaml
+kubectl apply -f k8s/
+kubectl apply -f k8s/04-deployments/
 ```
 
 Verifier les pods:
@@ -89,7 +90,7 @@ kubectl get pods -n tp-microservices
 
 ## Acces a la plateforme
 
-Si `ingress-nginx` n'est pas installe, execute d'abord:
+Si `ingress-nginx` n'est pas installé, exècute d'abord:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
@@ -102,7 +103,7 @@ Si tu utilises ingress-nginx en local:
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
 ```
 
-Puis ouvre:
+Puis:
 
 - Front user: `http://localhost:8080/user`
 - Front admin: `http://localhost:8080/admin`
