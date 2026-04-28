@@ -46,11 +46,7 @@ data:
   app-config.json: |
     {
       "service": "back-client",
-      "port": 3001,
-      "features": {
-        "enableTicketCreation": true,
-        "enableTicketAttachment": true
-      }
+      "port": 3001
     }
 ---
 apiVersion: v1
@@ -62,11 +58,7 @@ data:
   app-config.json: |
     {
       "service": "back-admin",
-      "port": 3002,
-      "features": {
-        "enableTicketOps": true,
-        "enableAudit": true
-      }
+      "port": 3002
     }
 ---
 apiVersion: v1

@@ -103,6 +103,13 @@ Si tu utilises ingress-nginx en local:
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
 ```
 
+Pour couper un pod (afin d'essayer l'accessibilité), voici un exemple de commande
+
+```bash
+kubectl scale deployment back-admin --replicas=0 -n tp-microservices
+```
+
+
 Puis:
 
 - Front user: `http://localhost:8080/user`
