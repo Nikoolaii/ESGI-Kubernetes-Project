@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back-admin
+  namespace: tp-microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: back-admin
+  template:
+    metadata:
+      labels:
+        app: back-admin
+        zone: logic
+    spec:
+      containers:
+        - name: back-admin
+          image: tp/back-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3002
+          envFrom:
+            - configMapRef:
+                name: shared-config
+          env:
+            - name: PORT
+              value: "3002"
+            - name: SERVICE_NAME
+              value: back-admin
+            - name: APP_CONFIG_FILE
+              value: /app/config/app-config.json
+          volumeMounts:
+            - name: app-file-config
+              mountPath: /app/config/app-config.json
+              subPath: app-config.json
+      volumes:
+        - name: app-file-config
+          configMap:
+            name: back-admin-file-config

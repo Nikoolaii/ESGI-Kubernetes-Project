@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-config
+  namespace: tp-microservices
+data:
+  APP_ENV: production
+  FRONT_PORT: "80"
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: appdb
+  POSTGRES_USER: appuser
+  POSTGRES_PASSWORD: apppassword
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  S3_ENDPOINT: "http://s3:9000"
+  S3_ACCESS_KEY: minio
+  S3_SECRET_KEY: miniopassword
+  S3_BUCKET: app-files
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: front-nginx-config
+  namespace: tp-microservices
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: back-client-file-config
+  namespace: tp-microservices
+data:
+  app-config.json: |
+    {
+      "service": "back-client",
+      "port": 3001,
+      "features": {
+        "enableTicketCreation": true,
+        "enableTicketAttachment": true
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: back-admin-file-config
+  namespace: tp-microservices
+data:
+  app-config.json: |
+    {
+      "service": "back-admin",
+      "port": 3002,
+      "features": {
+        "enableTicketOps": true,
+        "enableAudit": true
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-declarative-config
+  namespace: tp-microservices
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    services:
+      - name: client-service
+        url: http://back-client.tp-microservices.svc.cluster.local:3001
+        routes:
+          - name: client-route
+            paths:
+              - /api/client
+            strip_path: true
+      - name: admin-service
+        url: http://back-admin.tp-microservices.svc.cluster.local:3002
+        routes:
+          - name: admin-route
+            paths:
+              - /api/admin
+            strip_path: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: tp-microservices
+data:
+  01-init.sql: |
+    CREATE TABLE IF NOT EXISTS app_health (
+      id SERIAL PRIMARY KEY,
+      service_name VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO app_health(service_name) VALUES ('postgres');
+
+    CREATE TABLE IF NOT EXISTS tickets (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
+      priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
+      requester_name TEXT NOT NULL,
+      assignee_name TEXT,
+      attachment_key TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO tickets (title, description, status, priority, requester_name, assignee_name)
+    SELECT seed.title, seed.description, seed.status, seed.priority, seed.requester_name, seed.assignee_name
+    FROM (
+      VALUES
+        ('Connexion VPN instable', 'Le VPN coupe toutes les 10 minutes', 'open', 'high', 'Alice', NULL),
+        ('Erreur MFA mobile', 'Le code OTP ne passe pas sur Android', 'in_progress', 'medium', 'Yanis', 'Sophie')
+    ) AS seed(title, description, status, priority, requester_name, assignee_name)
+    WHERE NOT EXISTS (SELECT 1 FROM tickets);
